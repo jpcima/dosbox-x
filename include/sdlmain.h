@@ -91,6 +91,9 @@ struct SDL_Block {
         bool packed_pixel;
         bool paletted_texture;
         bool pixel_buffer_object;
+#if defined(C_SDL2)
+        SDL_GLContext context;
+#endif
     } opengl;
 #endif
     struct {

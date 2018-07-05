@@ -792,6 +792,12 @@ SDL_Window* GFX_SetSDLWindowMode(Bit16u width, Bit16u height, SCREEN_TYPES scree
 //          || (fullscreen && ((width != currWidth) || (height != currHeight)))
        ) {
         lastType = screenType;
+#if C_OPENGL
+        if (sdl.opengl.context) {
+            SDL_GL_DeleteContext(sdl.opengl.context);
+            sdl.opengl.context=0;
+        }
+#endif
         if (sdl.window) {
             SDL_DestroyWindow(sdl.window);
         }
@@ -806,6 +812,11 @@ SDL_Window* GFX_SetSDLWindowMode(Bit16u width, Bit16u height, SCREEN_TYPES scree
         }
         SDL_GetWindowSize(sdl.window, &currWidth, &currHeight);
         sdl.update_display_contents = ((width == currWidth) && (height == currHeight));
+#if C_OPENGL
+        if (screenType == SCREEN_OPENGL) {
+            sdl.opengl.context = SDL_GL_CreateContext(sdl.window);
+        }
+#endif
         return sdl.window;
     }
     /* Fullscreen mode switching has its limits, and is also problematic on
@@ -859,7 +870,7 @@ static SDL_Window * GFX_SetSDLOpenGLWindow(Bit16u width, Bit16u height) {
 # endif
 #endif
 
-#if C_OPENGL && !defined(C_SDL2) && DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
+#if C_OPENGL && DOSBOXMENU_TYPE == DOSBOXMENU_SDLDRAW
 const unsigned int SDLDrawGenFontTextureUnitPerRow = 16;
 const unsigned int SDLDrawGenFontTextureRows = 16;
 const unsigned int SDLDrawGenFontTextureWidth = SDLDrawGenFontTextureUnitPerRow * 8;
@@ -986,31 +997,61 @@ void GFX_LogSDLState(void) {
     GFX_Ashift = sdl.surface->format->Ashift;
 }
 
-#if !defined(C_SDL2) && C_OPENGL
+#if C_OPENGL
 int Voodoo_OGL_GetWidth();
 int Voodoo_OGL_GetHeight();
 bool Voodoo_OGL_Active();
 
-static SDL_Surface * GFX_SetupSurfaceScaledOpenGL(Bit32u sdl_flags, Bit32u bpp) {
+SDL_Surface *GFX_UpdateVideoMode(int w, int h, int bpp, Bit32u sdl_flags) {
+    SDL_Surface *surface;
+#if defined(C_SDL2)
+    SDL_SetWindowSize(sdl.window, w, h);
+    SDL_SetWindowFullscreen(sdl.window, (sdl_flags & SDL_WINDOW_FULLSCREEN) ? SDL_WINDOW_FULLSCREEN : 0);
+    SDL_SetWindowResizable(sdl.window, (sdl_flags & SDL_WINDOW_RESIZABLE) ? SDL_TRUE : SDL_FALSE);
+    /* SDL2 update bpp? */
+    surface = sdl.surface = SDL_GetWindowSurface(sdl.window);
+#else
+    surface = sdl.surface = SDL_SetVideoMode(w,h,bpp,(unsigned int)sdl_flags);
+#endif
+    return surface;
+}
+
+static SDL_Surface * GFX_SetupSurfaceScaledOpenGL(Bit32u sdl_flags) {
     Bit16u fixedWidth;
     Bit16u fixedHeight;
     Bit16u windowWidth;
     Bit16u windowHeight;
 
-    if (sdl.desktop.prevent_fullscreen) /* 3Dfx openGL do not allow resize */
+    if (sdl.desktop.prevent_fullscreen) { /* 3Dfx openGL do not allow resize */
+#if defined(C_SDL2)
+        sdl_flags &= ~((unsigned int)SDL_WINDOW_RESIZABLE);
+#else
         sdl_flags &= ~((unsigned int)SDL_RESIZABLE);
+#endif
+    }
 
-    if (sdl.desktop.want_type == SCREEN_OPENGL)
+    if (sdl.desktop.want_type == SCREEN_OPENGL) {
+#if defined(C_SDL2)
+        sdl_flags |= (unsigned int)SDL_WINDOW_OPENGL;
+#else
         sdl_flags |= (unsigned int)SDL_OPENGL;
+#endif
+    }
 
     if (sdl.desktop.fullscreen) {
         fixedWidth = sdl.desktop.full.fixed ? sdl.desktop.full.width : 0;
         fixedHeight = sdl.desktop.full.fixed ? sdl.desktop.full.height : 0;
+#if defined(C_SDL2)
+        sdl_flags |= (unsigned int)SDL_WINDOW_FULLSCREEN;
+#else
         sdl_flags |= (unsigned int)(SDL_FULLSCREEN|SDL_HWSURFACE);
+#endif
     } else {
         fixedWidth = sdl.desktop.window.width;
         fixedHeight = sdl.desktop.window.height;
+#if !defined(C_SDL2)
         sdl_flags |= (unsigned int)SDL_HWSURFACE;
+#endif
     }
     if (fixedWidth == 0 || fixedHeight == 0) {
         Bitu consider_height = menu.maxwindow ? currentWindowHeight : 0;
@@ -1107,7 +1148,7 @@ static SDL_Surface * GFX_SetupSurfaceScaledOpenGL(Bit32u sdl_flags, Bit32u bpp) 
     }
 #endif
 
-    sdl.surface=SDL_SetVideoMode(windowWidth,windowHeight,(int)bpp,(unsigned int)sdl_flags);
+    GFX_UpdateVideoMode(windowWidth, windowHeight, 0, sdl_flags);
     sdl.deferred_resize = false;
     sdl.must_redraw_all = true;
 
@@ -1597,6 +1638,18 @@ bool initedOpenGL = false;
 
 void RENDER_Reset(void);
 
+#if C_OPENGL
+void GFX_SwapBuffers(void)
+{
+#if defined(C_SDL2)
+    SDL_GL_SwapWindow(sdl.window);
+#else
+    SDL_GL_SwapBuffers();
+#endif
+}
+
+#endif
+
 Bitu GFX_SetSize(Bitu width, Bitu height, Bitu flags, double scalex, double scaley, GFX_CallBack_t callback) 
 {
     if (width == 0 || height == 0) {
@@ -1663,10 +1716,18 @@ do_surface:
 #if SDL_VERSION_ATLEAST(1, 2, 11)
         Section_prop * sec=static_cast<Section_prop *>(control->GetSection("vsync"));
         if(sec) {
+#if defined(C_SDL2)
+            SDL_GL_SetSwapInterval( (!strcmp(sec->Get_string("vsyncmode"),"host"))?1:0 );
+#else
             SDL_GL_SetAttribute( SDL_GL_SWAP_CONTROL, (!strcmp(sec->Get_string("vsyncmode"),"host"))?1:0 );
+#endif
         }
 #endif
-        GFX_SetupSurfaceScaledOpenGL(SDL_RESIZABLE, 0);
+#if defined(C_SDL2)
+        GFX_SetupSurfaceScaledOpenGL(SDL_WINDOW_RESIZABLE);
+#else
+        GFX_SetupSurfaceScaledOpenGL(SDL_RESIZABLE);
+#endif
         if (!sdl.surface || sdl.surface->format->BitsPerPixel<15) {
             LOG_MSG("SDL:OPENGL:Can't open drawing surface, are you running in 16bpp(or higher) mode?");
             goto do_surface;
@@ -1694,7 +1755,7 @@ do_surface:
             LOG_MSG("SDL:OPENGL:No support for texturesize of %d (max size is %d), falling back to surface",texsize,sdl.opengl.max_texsize);
             goto do_surface;
         }
-        /* Create the texture and display list */
+        /* create the texture and display list */
         if (sdl.opengl.pixel_buffer_object) {
             glGenBuffersARB(1, &sdl.opengl.buffer);
             glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_EXT, sdl.opengl.buffer);
@@ -1737,7 +1798,7 @@ do_surface:
         gl_clear_countdown = 2; // two GL buffers
         glClearColor (0.0, 0.0, 0.0, 1.0);
         glClear(GL_COLOR_BUFFER_BIT);
-//      SDL_GL_SwapBuffers();
+//      GFX_SwapBuffers();
 //      glClear(GL_COLOR_BUFFER_BIT);
         glShadeModel (GL_FLAT);
         glBlendFunc(GL_ONE, GL_ZERO);
@@ -3016,7 +3077,7 @@ void GFX_EndUpdate(const Bit16u *changedLines) {
                             (Bit8u *)sdl.opengl.framebuf);
                     }
                     glCallList(sdl.opengl.displaylist);
-                    SDL_GL_SwapBuffers();
+                    GFX_SwapBuffers();
                 } else
 #endif /*C_XBRZ*/
                  if (sdl.opengl.pixel_buffer_object) {
@@ -3029,7 +3090,7 @@ void GFX_EndUpdate(const Bit16u *changedLines) {
                             GL_UNSIGNED_INT_8_8_8_8_REV, (void*)0);
                     glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_EXT, 0);
                     glCallList(sdl.opengl.displaylist);
-                    SDL_GL_SwapBuffers();
+                    GFX_SwapBuffers();
                 } else if (changedLines) {
                     if(changedLines[0] == sdl.draw.height) 
                         return;
@@ -3096,7 +3157,7 @@ void GFX_EndUpdate(const Bit16u *changedLines) {
                     glBindTexture(GL_TEXTURE_2D,sdl.opengl.texture);
 #endif
 
-                    SDL_GL_SwapBuffers();
+                    GFX_SwapBuffers();
                 }
 
                 if(!menu.hidecycles && !sdl.desktop.fullscreen) frames++; 
@@ -3962,7 +4023,7 @@ static void HandleMouseMotion(SDL_MouseMotionEvent * motion) {
             gl_menudraw_countdown = 2; // two GL buffers
             GFX_OpenGLRedrawScreen();
             GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
-            SDL_GL_SwapBuffers();
+            GFX_SwapBuffers();
 #endif
         }
  
@@ -3976,7 +4037,7 @@ static void HandleMouseMotion(SDL_MouseMotionEvent * motion) {
             gl_menudraw_countdown = 2; // two GL buffers
             GFX_OpenGLRedrawScreen();
             GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
-            SDL_GL_SwapBuffers();
+            GFX_SwapBuffers();
 #endif
         }
     }
@@ -4168,7 +4229,7 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button) {
                         }
                     }
 
-                    SDL_GL_SwapBuffers();
+                    GFX_SwapBuffers();
 #endif
                 }
                 else {
@@ -4478,7 +4539,7 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button) {
 
 #if C_OPENGL
                         if (OpenGL_using())
-                            SDL_GL_SwapBuffers();
+                            GFX_SwapBuffers();
                         else
 #endif
                             MenuFullScreenRedraw();
@@ -4524,7 +4585,7 @@ static void HandleMouseButton(SDL_MouseButtonEvent * button) {
                     mainMenu.setRedraw();
                     GFX_DrawSDLMenu(mainMenu,mainMenu.display_list);
 
-                    SDL_GL_SwapBuffers();
+                    GFX_SwapBuffers();
 
                     gl_clear_countdown = 2;
                     gl_menudraw_countdown = 2; // two GL buffers

@@ -71,6 +71,8 @@ UINT32 texrgb[256*256];
 std::map <const UINT32, ogl_texmap> textures[2];
 
 void GFX_PreventFullscreen(bool lockout);
+void GFX_SwapBuffers(void);
+SDL_Surface *GFX_UpdateVideoMode(int w, int h, int bpp, Bit32u sdl_flags);
 
 int Voodoo_OGL_GetWidth() {
 	if (v != NULL)
@@ -1293,7 +1295,7 @@ void voodoo_ogl_draw_triangle(poly_extra_data *extra) {
 void voodoo_ogl_swap_buffer() {
 	VOGL_ClearBeginMode();
 
-	SDL_GL_SwapBuffers();
+	GFX_SwapBuffers();
 
 	cached_line_front_y=-1;
 	cached_line_back_y=-1;
@@ -1632,7 +1634,9 @@ void voodoo_ogl_reset_videomode(void) {
 
 	GFX_TearDown();
 
+#if !defined(C_SDL2)
 	bool full_sdl_restart = true;	// make dependent on surface=opengl
+#endif
 
 	SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
 	SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
@@ -1672,26 +1676,41 @@ void voodoo_ogl_reset_videomode(void) {
     GFX_ReleaseMouse();
     GFX_ForceFullscreenExit();
 
+#if defined(C_SDL2)
+	Uint32 sdl_flags = SDL_WINDOW_OPENGL;
+#else
 	Uint32 sdl_flags = SDL_OPENGL;
+#endif
 
-    ogl_surface = SDL_SetVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags);
+    ogl_surface = GFX_UpdateVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags);
 
 	if (ogl_surface == NULL) {
+#if !defined(C_SDL2)
 		if (full_sdl_restart) {
 			SDL_QuitSubSystem(SDL_INIT_VIDEO);
 			SDL_InitSubSystem(SDL_INIT_VIDEO);
-			ogl_surface = SDL_SetVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags);
+			ogl_surface = GFX_UpdateVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags);
 		}
+#endif
 		if (ogl_surface == NULL) {
 			has_alpha = false;
 			SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
-			if ((ogl_surface = SDL_SetVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags)) == NULL) {
+			if ((ogl_surface = GFX_UpdateVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags)) == NULL) {
 				has_stencil = false;
 				SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
-				if ((ogl_surface = SDL_SetVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags)) == NULL) {
-					if (sdl_flags & SDL_FULLSCREEN) {
+				if ((ogl_surface = GFX_UpdateVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags)) == NULL) {
+#if defined(C_SDL2)
+					if (sdl_flags & SDL_WINDOW_FULLSCREEN)
+#else
+					if (sdl_flags & SDL_FULLSCREEN)
+#endif
+					{
+#if defined(C_SDL2)
+						sdl_flags &= ~(SDL_WINDOW_FULLSCREEN);
+#else
 						sdl_flags &= ~(SDL_FULLSCREEN);
-						if ((ogl_surface = SDL_SetVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags)) == NULL) {
+#endif
+						if ((ogl_surface = GFX_UpdateVideoMode((int)v->fbi.width, (int)v->fbi.height, 32, sdl_flags)) == NULL) {
 							E_Exit("VOODOO: opengl init error");
 						}
 					} else {
@@ -1765,7 +1784,13 @@ void voodoo_ogl_reset_videomode(void) {
 	/* Something in Windows keeps changing the shade model on us from the last glShadeModel() call. Change it back. */
 	glShadeModel(GL_SMOOTH);
 
-	LOG_MSG("VOODOO: OpenGL: mode set, resolution %d:%d %s", v->fbi.width, v->fbi.height, (sdl_flags & SDL_FULLSCREEN) ? "(fullscreen)" : "");
+	LOG_MSG("VOODOO: OpenGL: mode set, resolution %d:%d %s", v->fbi.width, v->fbi.height,
+#if defined(C_SDL2)
+	        (sdl_flags & SDL_WINDOW_FULLSCREEN) ? "(fullscreen)" : ""
+#else
+	        (sdl_flags & SDL_FULLSCREEN) ? "(fullscreen)" : ""
+#endif
+	    );
 }
 
 void voodoo_ogl_update_dimensions(void) {
